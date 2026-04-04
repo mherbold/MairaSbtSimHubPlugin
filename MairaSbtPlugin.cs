@@ -183,7 +183,7 @@ namespace MairaSimHub.SbtPlugin
                 _lastSentLeftTenths  = -1;
                 _lastSentRightTenths = -1;
                 SendCalibration();
-                SendMaxMovement();
+                SendMaxSpeed();
                 SimHub.Logging.Current.Info("[MairaSbtPlugin] Connected to MAIRA SBT.");
             }
 
@@ -237,7 +237,7 @@ namespace MairaSimHub.SbtPlugin
             _serial.WriteLine($"BL{maximumTenths:D4}R{maximumTenths:D4}");
         }
 
-        public void SendMaxMovement()
+        public void SendMaxSpeed()
         {
             if (!_isConnected)
                 return;

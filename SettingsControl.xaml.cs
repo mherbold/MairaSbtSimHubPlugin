@@ -57,7 +57,7 @@ namespace MairaSimHub.SbtPlugin
 
         private void ApplyMotorSpeedButton_Click(object sender, System.Windows.RoutedEventArgs e)
         {
-            Plugin.SendMaxMovement();
+            Plugin.SendMaxSpeed();
         }
 
         // -----------------------------------------------------------------------
