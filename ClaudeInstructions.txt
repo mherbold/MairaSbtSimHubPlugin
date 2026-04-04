@@ -1,0 +1,201 @@
+Below are the original instructions given to Claude to build this project.
+
+=============================
+
+You are working from the latest uploaded MAIRA Refactored source that can be found at C:\Users\marvi\OneDrive\Documents\GitHub\MarvinsAIRARefactored.
+
+Your job is to create a NEW Visual Studio project in the currently open solution for a SimHub plugin which reproduces the behavior of MAIRA’s Seat Belt Tensioner component, but without requiring MAIRA to be running.
+
+Important constraints:
+- Do NOT depend on the MAIRA app process, memory-mapped file, or iRacing SDK.
+- The plugin must obtain telemetry from SimHub’s standard available properties / GameData.
+- The plugin must talk directly to the existing MAIRA SBT hardware over USB serial using the existing firmware protocol.
+- Preserve the same core tuning concepts and behavior as MAIRA’s Seat Belt Tensioner.
+- Keep the code simple, explicit, and maintainable.
+- Use descriptive variable names.
+- Prefer `var` where natural.
+- Do not introduce unnecessary abstractions.
+
+Before coding, inspect these MAIRA files in the uploaded zip and mirror their behavior:
+- `Components/SeatBeltTensioner.cs`
+- `DataContext/Settings.cs` (Seat Belt Tensioner section)
+- `DataContext/ContextSettings.cs` (Seat Belt Tensioner section)
+- `Classes/UsbSerialPortHelper.cs`
+- `Classes/MathZ.cs`
+- `Pages/SeatBeltTensionerPage.xaml`
+- `Pages/SeatBeltTensionerPage.xaml.cs`
+- `InnoSetup/SBT/SBT.ino`
+
+Overall goal:
+Create a SimHub plugin DLL that:
+1. Detects and connects to the MAIRA SBT device.
+2. Reads SimHub telemetry each update.
+3. Computes left/right belt target positions using MAIRA-equivalent math.
+4. Sends the proper serial commands to the MAIRA SBT firmware.
+5. Exposes a SimHub plugin settings UI so users can tune the same basic settings.
+
+Project creation requirements:
+1. Start from the official SimHub SDK demo already installed with SimHub, not from an empty random C# library.
+   - Use: `C:\Program Files (x86)\SimHub\PluginSdk\User.PluginSdkDemo`
+   - Copy it into a new solution folder with a unique namespace and assembly name to avoid collisions.
+   - Rename everything cleanly for this plugin, such as:
+     - Solution: `MairaSbtSimHubPlugin.sln`
+     - Project: `Maira.SimHub.SbtPlugin`
+     - Root namespace: `Maira.SimHub.SbtPlugin`
+     - Main plugin class: `MairaSbtPlugin`
+2. Preserve whatever target framework / references / output conventions the current SimHub SDK demo uses.
+   - Do NOT guess a framework version if the demo already defines it.
+   - Make the project build directly into the SimHub plugins folder in Debug if the demo already follows that pattern.
+3. Pull in only the external packages actually needed for this plugin.
+   - Most likely:
+     - `System.IO.Ports`
+     - `System.Management`
+   - If the SimHub SDK demo already references required assemblies, keep those references aligned with the SDK demo.
+   - Do NOT add unrelated MAIRA dependencies.
+4. The final output should be a standard SimHub plugin DLL plus any supporting files required by the plugin.
+
+Functional behavior to replicate from MAIRA:
+1. Device discovery / connection
+   - Recreate the USB serial behavior used by MAIRA.
+   - Search COM devices and identify the hardware using the handshake:
+     - Write: `WHAT ARE YOU?`
+     - Expect response containing: `MAIRA SBT`
+   - If a user enables auto-connect, the plugin should automatically connect when possible.
+   - Provide manual connect/disconnect support in the settings UI.
+   - Log useful connection events.
+
+2. Serial protocol
+   Implement the exact command family used by the current MAIRA SBT firmware:
+   - Set target positions:
+     - `SLxxxxRyyyy`
+   - Set neutral:
+     - `NLxxxxRyyyy`
+   - Set minimum:
+     - `ALxxxxRyyyy`
+   - Set maximum:
+     - `BLxxxxRyyyy`
+   - Set max movement per update:
+     - `MLxxxxRyyyy`
+   - All values are integer tenths of degrees, 4 digits, newline-terminated.
+
+3. Settings to expose in SimHub UI
+   Create a standard WPF settings control for the plugin. Expose at least these settings:
+   - Enable / Auto-connect to SBT
+   - Manual Connect / Disconnect control
+   - Minimum angle
+   - Neutral angle
+   - Maximum angle
+   - Max motor speed
+   - Surge max G
+   - Sway max G
+   - Heave max G
+   - Surge subtract gravity
+   - Sway subtract gravity
+   - Heave subtract gravity
+   - Surge invert
+   - Sway invert
+   - Heave invert
+
+   Use the same defaults and ranges as MAIRA:
+   - Minimum angle: default 60, clamp 0..90
+   - Neutral angle: default 90, clamp between minimum and maximum
+   - Maximum angle: default 120, clamp 90..180
+   - Surge/Sway/Heave max G: default 10, clamp 0.1..50
+   - Max motor speed: default 25, clamp 5..50
+   - Heave subtract gravity default true
+   - Surge subtract gravity default false
+   - Sway subtract gravity default false
+   - All invert flags default false
+
+   Whenever calibration-related values change while connected, immediately send updated calibration / speed commands.
+
+   Keep MAIRA’s per-car context system out of the first version of this plugin unless SimHub gives you a really clean equivalent.
+
+4. Telemetry inputs
+   Use SimHub standard telemetry / GameData / plugin-manager-accessible properties.
+   Important:
+   - Prefer direct body-frame accelerations and pitch/roll if available.
+   - The required logical inputs are:
+     - longitudinal acceleration
+     - lateral acceleration
+     - vertical acceleration
+     - pitch
+     - roll
+   - Inspect the current SimHub SDK demo and available GameData access patterns to determine the correct current property names rather than guessing.
+   - Add comments documenting exactly which SimHub properties are used.
+   - If multiple candidate property names exist across games, implement a robust fallback strategy.
+
+5. Update loop behavior
+   Reproduce the MAIRA update behavior as closely as practical:
+   - Accumulate telemetry samples each SimHub data update.
+   - Average the accumulated values.
+   - Run the actual SBT output update at a reduced rate similar to MAIRA’s ~20 Hz behavior from a ~60 Hz source.
+   - Reset accumulators after each output update.
+
+6. Gravity compensation
+   Reproduce MAIRA’s gravity subtraction logic:
+   - Compute gravity contribution in car body space from averaged pitch and roll.
+   - Use:
+     - `gravLong = G * -sin(pitch)`
+     - `gravLat = G * cos(pitch) * sin(roll)`
+     - `gravVert = G * cos(pitch) * cos(roll)`
+   - Subtract these only when the corresponding “subtract gravity” setting is enabled.
+
+7. Axis normalization
+   Reproduce the MAIRA normalization conventions:
+   - Surge:
+     - braking tightens both belts
+     - acceleration loosens both belts
+     - normalized from negative longitudinal acceleration
+   - Sway:
+     - positive value tightens the right belt and loosens the left belt
+   - Heave:
+     - bumps/crests tighten both belts
+     - normalized from negative vertical acceleration
+   - Clamp each normalized axis to [-1, 1] using the configured max G value.
+   - Apply invert flags after normalization.
+
+8. Shoulder combination
+   Reproduce MAIRA’s combination exactly:
+   - `leftCombinedNormalized = surgeNormalized + heaveNormalized - swayNormalized`
+   - `rightCombinedNormalized = surgeNormalized + heaveNormalized + swayNormalized`
+
+9. Soft limiter
+   Recreate the MAIRA soft limiter behavior from `MathZ.SoftLimiter`.
+   - Port the function directly into the plugin so the feel matches.
+   - Do not replace it with a generic tanh unless absolutely necessary.
+
+10. Angle mapping
+   Reproduce MAIRA’s mapping logic:
+   - Work in tenths of degrees.
+   - Respect minimum / neutral / maximum calibration.
+   - Use piecewise mapping around neutral so positive and negative normalized values map correctly to the available range.
+   - Clamp final left/right target positions to min/max.
+   - Avoid sending duplicate position commands if the values did not change.
+
+11. Robustness
+   - If disconnected, stop sending.
+   - Reset last-sent positions on disconnect.
+   - Catch serial exceptions cleanly.
+   - If the port closes unexpectedly, mark the device disconnected.
+   - Keep logs useful but not noisy.
+
+12. Deliverables
+   Produce:
+   - The new solution and project files
+   - Main plugin class
+   - Settings model class
+   - WPF settings control XAML and code-behind
+   - USB serial helper class (can be adapted from MAIRA, but trimmed to only what is needed)
+   - Math helper class containing the soft limiter and G constant
+   - README with install/build/debug notes
+   - Short notes listing the SimHub telemetry properties actually used
+
+13. Output format
+   In your response:
+   - First summarize the design.
+   - Then list every file you created/modified.
+   - Then provide the full code for each new/changed file.
+   - Call out any places where SimHub SDK-specific names were discovered from the demo and used intentionally.
+   - Do not leave placeholders like “implement later”.
+   - If something about SimHub property naming is uncertain, inspect the SDK/demo and choose the best current supported approach, documenting it clearly.
