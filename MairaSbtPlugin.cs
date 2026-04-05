@@ -1,6 +1,7 @@
 using GameReaderCommon;
 using SimHub.Plugins;
 using System;
+using System.Diagnostics;
 using System.Windows.Media;
 
 namespace MairaSimHub.SbtPlugin
@@ -20,26 +21,14 @@ namespace MairaSimHub.SbtPlugin
     // (all from GameReaderCommon.StatusDataBase):
     //
     //   AccelerationSurge  (Nullable<double>, m/s²)
-    //       Body-frame longitudinal acceleration, positive = forward.
-    //       Includes the gravity contribution projected onto the longitudinal axis.
+    //       Body-frame longitudinal acceleration, positive = forward (dynamic only, no gravity).
     //       Source maps to iRacing LongAccel and SimHub's normalised equivalent.
     //
     //   AccelerationSway   (Nullable<double>, m/s²)
-    //       Body-frame lateral acceleration, positive = leftward (right-turn centripetal).
-    //       Includes gravity projection on the lateral axis.
+    //       Body-frame lateral acceleration, positive = leftward (dynamic only, no gravity).
     //
     //   AccelerationHeave  (Nullable<double>, m/s²)
-    //       Body-frame vertical acceleration, positive = upward.
-    //       At rest on flat ground ≈ +9.81 m/s² (specific force includes normal-force reaction).
-    //
-    //   OrientationPitch   (double, degrees)
-    //       Pitch angle.  Positive = nose-up.
-    //       Treated as degrees to match IMotionInputData.OrientationPitchDegrees.
-    //       Converted to radians internally for gravity-decomposition trig.
-    //
-    //   OrientationRoll    (double, degrees)
-    //       Roll angle.  Positive = left-side-up.
-    //       Same unit treatment as OrientationPitch.
+    //       Body-frame vertical acceleration, positive = upward (dynamic only, no gravity).
     // -------------------------------------------------------------------------
 
     [PluginDescription("Drives the MAIRA Seat Belt Tensioner hardware over USB serial using SimHub telemetry. No MAIRA app required.")]
@@ -72,18 +61,20 @@ namespace MairaSimHub.SbtPlugin
 
         private readonly SbtSerialHelper _serial = new SbtSerialHelper();
         private bool _isConnected = false;
+        private bool _isOnTrack   = false;
 
-        // Suppress sending duplicate SL commands when the position has not changed.
+        // Suppress sending duplicate SL commands when the position has not changed,
+        // but always send at least every KeepAliveIntervalMs to prevent the SBT from sleeping.
+        private const int KeepAliveIntervalMs = 500;
         private int _lastSentLeftTenths  = -1;
         private int _lastSentRightTenths = -1;
+        private readonly Stopwatch _keepAliveTimer = Stopwatch.StartNew();
 
         // Telemetry accumulators — summed each DataUpdate frame, averaged before
         // each SBT output update.  Mirrors MAIRA's per-frame accumulation.
         private float _longAccelSum = 0f;
         private float _latAccelSum  = 0f;
         private float _vertAccelSum = 0f;
-        private float _pitchSum     = 0f;
-        private float _rollSum      = 0f;
         private int   _sampleCount  = 0;
 
         // Divides the ~60 Hz DataUpdate rate to ~20 Hz SBT output,
@@ -121,18 +112,19 @@ namespace MairaSimHub.SbtPlugin
             if (!_isConnected || !Settings.SbtEnabled)
                 return;
 
-            // Accumulate telemetry each frame while the game is providing live data.
-            if (data.GameRunning && data.NewData != null)
+            // Car is considered on-track when the sim is live, not in a menu or replay,
+            // and telemetry data is available.  GameInMenu covers the garage screen.
+            _isOnTrack = data.GameRunning && !data.GameInMenu && !data.GameReplay
+                         && data.NewData != null;
+
+            // Accumulate telemetry each frame while the car is on track.
+            if (_isOnTrack)
             {
                 // Nullable<double> fields default to 0 if the active game reader
                 // does not supply them.  Cast to float for all internal arithmetic.
                 _longAccelSum += (float)(data.NewData.AccelerationSurge ?? 0.0);
                 _latAccelSum  += (float)(data.NewData.AccelerationSway   ?? 0.0);
                 _vertAccelSum += (float)(data.NewData.AccelerationHeave  ?? 0.0);
-
-                // Degrees — converted to radians inside RunSbtUpdate before trig.
-                _pitchSum += (float)data.NewData.OrientationPitch;
-                _rollSum  += (float)data.NewData.OrientationRoll;
 
                 _sampleCount++;
             }
@@ -182,6 +174,7 @@ namespace MairaSimHub.SbtPlugin
             {
                 _lastSentLeftTenths  = -1;
                 _lastSentRightTenths = -1;
+                _keepAliveTimer.Restart();
                 SendCalibration();
                 SendMaxSpeed();
                 SimHub.Logging.Current.Info("[MairaSbtPlugin] Connected to MAIRA SBT.");
@@ -254,12 +247,15 @@ namespace MairaSimHub.SbtPlugin
             leftTenths  = ClampInt(leftTenths,  minimumTenths, maximumTenths);
             rightTenths = ClampInt(rightTenths, minimumTenths, maximumTenths);
 
-            // Skip the serial write if both values are identical to what was last sent.
-            if (leftTenths == _lastSentLeftTenths && rightTenths == _lastSentRightTenths)
+            // Skip the serial write if both values are identical to what was last sent
+            // AND the keepalive interval has not yet expired.
+            if (leftTenths == _lastSentLeftTenths && rightTenths == _lastSentRightTenths
+                    && _keepAliveTimer.ElapsedMilliseconds < KeepAliveIntervalMs)
                 return;
 
             _lastSentLeftTenths  = leftTenths;
             _lastSentRightTenths = rightTenths;
+            _keepAliveTimer.Restart();
 
             _serial.WriteLine($"SL{leftTenths:D4}R{rightTenths:D4}");
         }
@@ -267,89 +263,69 @@ namespace MairaSimHub.SbtPlugin
         // -----------------------------------------------------------------------
         // RunSbtUpdate  — called at ~20 Hz (every UpdateInterval DataUpdate frames)
         //
-        // Reproduces MAIRA's SeatBeltTensioner.Update() method exactly:
+        // Reproduces MAIRA's SeatBeltTensioner.Update() method:
         //   1. Average accumulated telemetry samples.
-        //   2. Decompose gravity into body-frame components from pitch and roll.
-        //   3. Optionally subtract gravity on each axis.
-        //   4. Normalise each axis to [-1, 1] using the configured max-G values.
-        //   5. Apply optional inversion per axis.
-        //   6. Combine into per-shoulder signals.
-        //   7. Apply soft limiter.
-        //   8. Map to tenths-of-a-degree using piecewise linear mapping around neutral.
-        //   9. Send SL command if positions changed.
+        //   2. Normalise each axis to [-1, 1] using the configured max-G values.
+        //   3. Apply optional inversion per axis.
+        //   4. Combine into per-shoulder signals.
+        //   5. Apply soft limiter.
+        //   6. Map to tenths-of-a-degree using piecewise linear mapping around neutral.
+        //   7. Send S command if positions changed.
         // -----------------------------------------------------------------------
         private void RunSbtUpdate()
         {
-            if (!_isConnected || _sampleCount == 0)
+            if (!_isConnected)
+                return;
+
+            // Off-track (menus, garage, replay) — release belt tension to minimum.
+            if (!_isOnTrack)
+            {
+                int offTrackMin = ClampInt((int)Math.Round(Settings.MinimumAngle * 10.0), 0, 900);
+                SendSetPosition(offTrackMin, offTrackMin);
+                return;
+            }
+
+            if (_sampleCount == 0)
                 return;
 
             // Step 1 — Average the accumulated samples.
-            float longAccelAvg = _longAccelSum / _sampleCount;
-            float latAccelAvg  = _latAccelSum  / _sampleCount;
-            float vertAccelAvg = _vertAccelSum / _sampleCount;
-            float pitchDegAvg  = _pitchSum     / _sampleCount;
-            float rollDegAvg   = _rollSum      / _sampleCount;
+            float longAccel = _longAccelSum / _sampleCount;
+            float latAccel  = _latAccelSum  / _sampleCount;
+            float vertAccel = _vertAccelSum / _sampleCount;
 
             // Reset accumulators for the next window.
             _longAccelSum = 0f;
             _latAccelSum  = 0f;
             _vertAccelSum = 0f;
-            _pitchSum     = 0f;
-            _rollSum      = 0f;
             _sampleCount  = 0;
 
-            // Step 2 — Convert orientation from degrees to radians, then decompose gravity.
+            // Step 2 — Normalise each axis to [-1, 1].
             //
-            // SimHub normalises OrientationPitch/Roll to degrees (confirmed via
-            // IMotionInputData.OrientationPitchDegrees / OrientationRollDegrees).
-            // iRacing uses radians natively; SimHub converts them before storing.
-            float pitch = pitchDegAvg * ((float)Math.PI / 180f);
-            float roll  = rollDegAvg  * ((float)Math.PI / 180f);
-
-            float cosPitch = (float)Math.Cos(pitch);
-            float sinPitch = (float)Math.Sin(pitch);
-            float cosRoll  = (float)Math.Cos(roll);
-            float sinRoll  = (float)Math.Sin(roll);
-
-            // Gravity contributions in car body frame (what the accelerometer reads at rest).
-            //   Pitch positive = nose-up  →  forward axis tilted into gravity field
-            //   Roll  positive = left-up  →  lateral axis tilted into gravity field
-            float gravLong = SbtMath.OneG * -sinPitch;            // longitudinal gravity component
-            float gravLat  = SbtMath.OneG *  cosPitch * sinRoll;  // lateral gravity component
-            float gravVert = SbtMath.OneG *  cosPitch * cosRoll;  // vertical gravity component (≈9.81 when flat)
-
-            // Step 3 — Optionally subtract gravity from each axis.
-            float longAccel = Settings.SurgeSubtractGravity ? longAccelAvg - gravLong : longAccelAvg;
-            float latAccel  = Settings.SwaySubtractGravity  ? latAccelAvg  - gravLat  : latAccelAvg;
-            float vertAccel = Settings.HeaveSubtractGravity ? vertAccelAvg - gravVert : vertAccelAvg;
-
-            // Step 4 — Normalise each axis to [-1, 1] (mirrors MAIRA exactly).
-            //
-            //   Surge: braking tightens both belts → normalised from −longAccel
-            //          positive surge = braking (longAccel < 0) → belts tighten
+            //   Surge: braking tightens both belts → normalised from longAccel
+            //          positive surge = braking (longAccel > 0) → belts tighten
             //   Sway:  positive biases right belt tighter, left belt looser
             //          positive sway = left-hand corner (latAccel > 0)
             //   Heave: normalised from −vertAccel; crests (low G) tighten both belts
-            float surgeNorm = ClampFloat(-longAccel / SbtMath.OneG / Settings.SurgeMaxG, -1f, 1f);
+            float surgeNorm = ClampFloat( longAccel / SbtMath.OneG / Settings.SurgeMaxG, -1f, 1f);
             float swayNorm  = ClampFloat( latAccel  / SbtMath.OneG / Settings.SwayMaxG,  -1f, 1f);
             float heaveNorm = ClampFloat(-vertAccel / SbtMath.OneG / Settings.HeaveMaxG, -1f, 1f);
 
-            // Step 5 — Optional per-axis inversion.
+            // Step 3 — Optional per-axis inversion.
             if (Settings.SurgeInvert) surgeNorm = -surgeNorm;
             if (Settings.SwayInvert)  swayNorm  = -swayNorm;
             if (Settings.HeaveInvert) heaveNorm = -heaveNorm;
 
-            // Step 6 — Combine into per-shoulder signals (mirrors MAIRA exactly).
+            // Step 4 — Combine into per-shoulder signals.
             //   Left shoulder:  surge + heave − sway
             //   Right shoulder: surge + heave + sway
             float leftCombined  = surgeNorm + heaveNorm - swayNorm;
             float rightCombined = surgeNorm + heaveNorm + swayNorm;
 
-            // Step 7 — Soft limiter (ported from MathZ.SoftLimiter in MAIRA).
+            // Step 5 — Soft limiter (ported from MathZ.SoftLimiter in MAIRA).
             float limitedLeft  = SbtMath.SoftLimiter(leftCombined);
             float limitedRight = SbtMath.SoftLimiter(rightCombined);
 
-            // Step 8 — Map normalised signal to tenths-of-a-degree.
+            // Step 6 — Map normalised signal to tenths-of-a-degree.
             //
             // Piecewise linear around neutral:
             //   positive signal maps [0, 1] → [neutral, maximum]
@@ -381,7 +357,7 @@ namespace MairaSimHub.SbtPlugin
                     (int)Math.Round(limitedRight * (neutralTenths - minimumTenths) + neutralTenths),
                     minimumTenths, maximumTenths);
 
-            // Step 9 — Send to hardware (skipped if unchanged).
+            // Step 7 — Send to hardware (skipped if unchanged).
             SendSetPosition(leftTargetTenths, rightTargetTenths);
         }
 

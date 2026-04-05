@@ -41,20 +41,6 @@ namespace MairaSimHub.SbtPlugin
         public float HeaveMaxG { get; set; } = 10f;
 
         // -----------------------------------------------------------------------
-        // Gravity subtraction
-        //
-        // When enabled, the gravity component along the corresponding body axis
-        // is subtracted from the raw accelerometer reading before normalisation.
-        // This removes the static 1 G contribution so only dynamic forces remain.
-        //
-        // Defaults match MAIRA: Heave subtract gravity ON, Surge/Sway OFF.
-        // -----------------------------------------------------------------------
-
-        public bool SurgeSubtractGravity { get; set; } = false;
-        public bool SwaySubtractGravity  { get; set; } = false;
-        public bool HeaveSubtractGravity { get; set; } = true;
-
-        // -----------------------------------------------------------------------
         // Axis inversion
         // -----------------------------------------------------------------------
 

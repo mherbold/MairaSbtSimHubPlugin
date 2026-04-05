@@ -113,13 +113,9 @@
 
                     <ui:TitledSlider Title="Surge max G  (G value that maps to ±1 normalised)"
                                      Minimum="0.1" Maximum="50"
+                                     TickFrequency="0.1" IsSnapToTickEnabled="True"
+                                     InputInterval="0.1" StringFormat="0.0"
                                      Value="{Binding SurgeMaxG, Mode=TwoWay}" />
-
-                    <styles:SHSectionSeparator />
-
-                    <styles:SHToggleCheckbox IsChecked="{Binding SurgeSubtractGravity, Mode=TwoWay}">
-                        Subtract gravity component from longitudinal acceleration
-                    </styles:SHToggleCheckbox>
 
                     <styles:SHSectionSeparator />
 
@@ -138,13 +134,9 @@
 
                     <ui:TitledSlider Title="Sway max G  (G value that maps to ±1 normalised)"
                                      Minimum="0.1" Maximum="50"
+                                     TickFrequency="0.1" IsSnapToTickEnabled="True"
+                                     InputInterval="0.1" StringFormat="0.0"
                                      Value="{Binding SwayMaxG, Mode=TwoWay}" />
-
-                    <styles:SHSectionSeparator />
-
-                    <styles:SHToggleCheckbox IsChecked="{Binding SwaySubtractGravity, Mode=TwoWay}">
-                        Subtract gravity component from lateral acceleration
-                    </styles:SHToggleCheckbox>
 
                     <styles:SHSectionSeparator />
 
@@ -163,13 +155,9 @@
 
                     <ui:TitledSlider Title="Heave max G  (G value that maps to ±1 normalised)"
                                      Minimum="0.1" Maximum="50"
+                                     TickFrequency="0.1" IsSnapToTickEnabled="True"
+                                     InputInterval="0.1" StringFormat="0.0"
                                      Value="{Binding HeaveMaxG, Mode=TwoWay}" />
-
-                    <styles:SHSectionSeparator />
-
-                    <styles:SHToggleCheckbox IsChecked="{Binding HeaveSubtractGravity, Mode=TwoWay}">
-                        Subtract gravity component from vertical acceleration  (default: ON)
-                    </styles:SHToggleCheckbox>
 
                     <styles:SHSectionSeparator />
 
